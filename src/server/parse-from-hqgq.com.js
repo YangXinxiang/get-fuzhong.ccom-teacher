@@ -1,10 +1,24 @@
 // 分析页面
+const path = require("path")
 const { requestGet } = require("./util/request")
 const { pageStr : totalStr } =require("./mockData/index2")
 const { pageStr : teacherStr } =require("./mockData/index-t2")
 const urlBase = "https://www.hqgq.com/gangqinjia/list-0-1.html"
-const pageNumberRange = [1,2] // 页面列表
+const pageNumberRange = [1,29] // 页面列表
 const allTeacherList = [];
+const localStorePathAll = "../../downloadPages/hqgq/";
+const localStorePathFZ = "../../downloadPages/hqgq-fz/";
+const localStorePathFZRJ = "../../downloadPages/hqgq-fz-rj/";
+const localStorePathFZRJ_AGE = "../../downloadPages/hqgq-fz-rj-age/";
+const jsonFileName = "hqgq-teacherList.json"
+const jsonFileNameFZ = "hqgq-teacherList-FZ.json"
+const jsonFileNameFZRJ = "hqgq-teacherList-FZ-RJ.json" // 进一步过滤，有带任教关键字的
+const jsonFileNameFZRJ_AGE = "hqgq-teacherList-FZ-RJ-AGE.json" // 进一步过滤，有带任教关键字的，有年龄限制的
+const jsonDataPath = `./data/`;
+const useLocalJson = false;
+const useLocalPage = true;
+const hqgqTeacherList  = require("./data/hqgq-teacherList.json")
+const {recordResult} = require("./util/FileUtil")
 async function getPageInfo(url, params=null) {
     const result = await requestGet(url,params);
     if(result && result.status === 200) {
@@ -14,9 +28,12 @@ async function getPageInfo(url, params=null) {
     }
 }
 
-function Teacher(id, name) {
+function Teacher(id, name, pageURL = "", birthYear=-1, age = -1) {
     this.id = id;
     this.name = name;
+    this.birthYear = birthYear;
+    this.age = age;
+    this.pageURL = pageURL;
 }
 
 /**
@@ -59,7 +76,8 @@ function parseTearchers(pageStr, pageURL) {
     const teacherList = []
     if(idList.length === nameList.length){
         for(let i=0; i<idList.length; i++ ) {
-            const teacher = new Teacher(idList[i], nameList[i])
+            const id = idList[i];
+            const teacher = new Teacher(id, nameList[i], `https://www.hqgq.com/gangqinjia/about/${id}.html`)
             teacherList.push(teacher)
             allTeacherList.push(teacher)
         }
@@ -78,28 +96,129 @@ function isCCOMTeacher(teagerPageStr) {
     if(teagerPageStr && teagerPageStr.indexOf("中央音乐学院")>=0 && teagerPageStr.indexOf("附中")>=0) {
         return true
     }
-    return false
-    
+    return false    
 }
 
+/**
+ * 判断是否是央院附中老师任教，用最暴力简单的方式判断
+ * @param {*} teagerPageStr 
+ * @returns 
+ */
+ function isCCOMTeacherRJ(teagerPageStr) {
+    if(teagerPageStr && teagerPageStr.indexOf("任教")>=0 ) {
+        return true
+    }
+    return false    
+}
+/**
+ * 按年龄进行一次过滤
+ * @param {*} teagerPageStr 
+ * @returns 
+ */
+ function getBirthYear(teagerPageStr) {
+    const ageReg = /.*(\d{4})年.{0,3}生|.*出生于(\d{4}).*/
+    const rst = ageReg.exec(teagerPageStr)
+    let birthInfo = {
+        birthYear: -1,
+        age : -1,
+    }
+
+    let birthYear = -1;
+    if(rst){
+        birthInfo.birthYear = parseInt(rst[1])
+        birthInfo.age = new Date().getFullYear() - birthInfo.birthYear
+        //console.log(`getBirthYear :: 出生年： ${rst[1]}`)
+    }
+    return birthInfo
+}
+
+/**
+ * 开始分析页面，遍历裂变范围，从每一个列表中拿到当前列表页的老师，从而分词到所有页面的所有老师信息，主要要拿到页面id和老师的名字
+ */
 async function startPare() {
     for(let page = pageNumberRange[0]; page <=pageNumberRange[1]; page++ ){
         const listUrl = `https://www.hqgq.com/gangqinjia/list-0-${page}.html`;
         const pageStrInfo = await getPageInfo(listUrl)
         parseTearchers(pageStrInfo)       
     }
-    console.log(allTeacherList)  
+    console.log(`startPare :: enter, allTeacherList.len = ${allTeacherList.length}`)  
+    storeLocalJson(allTeacherList)
+    return allTeacherList;
+}
+
+/**
+ * 下载并存储具体老师的信息到本地
+ */
+async function downloadAndStore() {
+    console.log(`downloadAndStore :: enter, total = `, hqgqTeacherList.length)
+    const fzTeacher = [] // 存储附中老师的容器
+    const fzTeacherRJ = [] // 存储附中老师的容器
+    try{
+        for(let i=0; i<hqgqTeacherList.length; i++) {
+            const id = hqgqTeacherList[i].id
+            const pageURL = `https://www.hqgq.com/gangqinjia/about/${id}.html`;
+            const pageInfo = await getPageInfo(pageURL);
+            const teacherName = hqgqTeacherList[i].name.replace(/[/\*%?]/g, "")
+            const fileName = `${id}___${teacherName}.html`
+            storePageToDist(pageInfo, fileName)
+            if(isCCOMTeacher(pageInfo)) {
+                storePageToDist(pageInfo, fileName, localStorePathFZ)
+                const ageInfo = getBirthYear(pageInfo)
+                fzTeacher.push(new Teacher(id,teacherName, pageURL, ageInfo.birthYear, ageInfo.age))
+                if(isCCOMTeacherRJ(pageInfo)){                    
+                    storePageToDist(pageInfo, fileName, localStorePathFZRJ)
+                    fzTeacherRJ.push(new Teacher(id,teacherName, pageURL, ageInfo.birthYear, ageInfo.age))
+                }
+            }
+            console.log(`downloadAndStore :: storing, i = ${i}, total = ${hqgqTeacherList.length}, pageURL = ${pageURL}`)
+        }
+        storeLocalJson(fzTeacher, jsonFileNameFZ)
+        storeLocalJson(fzTeacherRJ, jsonFileNameFZRJ)
+        console.log(`downloadAndStore :: stored end, fzTeacher.len = `, fzTeacher.length, "fzTeacherRJ.len = ", fzTeacherRJ.length)
+    }catch(e) {
+        console.log(`downloadAndStore :: error, `, e.message, e)
+    }
     
 }
 
+
+
+function storePageToDist(pageStr, fileName, dir = localStorePathAll) {
+    const fullPath = path.resolve(__dirname, dir, fileName)
+    console.log(`storePageToDist`, fullPath);
+    recordResult( fullPath, pageStr)
+}
+
+function storeLocalJson(json, fileName=jsonFileName) {
+    console.log(`storeLocalJson :: enter, fileName = ${fileName}`)
+    const fullPath = path.resolve(__dirname, jsonDataPath, fileName)
+    console.log(`storePageToDist`, fullPath);
+    recordResult( fullPath, json)
+}
 // 测试程序
 function test() {
     const rst = isCCOMTeacher(teacherStr)
     console.log(`test :: `, rst)
-}
-async function start() {
-    // startPare()
-    test()
+    storePageToDist(teacherStr, "201.html")
+    
 }
 
+function test2() {
+    console.log(`test2 ::enter`)
+    parseTearchers(totalStr)  
+    // const fullPath = path.resolve(__dirname, localStorePathAll, "tc.json")
+    storeLocalJson(allTeacherList)
+    console.log(allTeacherList)
+}
+function test3() {
+    console.log(`test3 ::enter`)
+}
+// 入口函数
+async function start() {
+    console.log(`start :: enter.`)
+    // await startPare() 如果本地已经于数据，就不需要再执行这一步了。
+    downloadAndStore(); // 开始下载具体的老师页面数据。
+    console.log(`start :: end.`)
+}
+// 程序启动的入口
 start()

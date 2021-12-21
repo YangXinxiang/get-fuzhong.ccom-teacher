@@ -4,7 +4,8 @@
   "description": "分析和获取央院附中老师",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start" : "node ./src/server/parse-from-hqgq.com.js"
   },
   "repository": {
     "type": "git",
